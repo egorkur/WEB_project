@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h3>Блюда</h3>
+<div class="row">
+    {% for dish_id, dish in dishes.items() %}
+        <div class="col-md-6 mb-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <h5 class="card-title">{{ dish.name }}</h5>
+                        <a href="/delete_dish/{{ dish.id }}" class="btn btn-danger btn-sm" 
+                           onclick="return confirm('Удалить блюдо?')">Удалить</a>
+                    </div>
+                    <p class="card-text">
+                        <small>
+                            Прием: {{ dish.application }}<br>
+                            {{ dish.total_kcal|round|int }} ккал |
+                            Б: {{ dish.total_prot|round(1) }} г |
+                            Ж: {{ dish.total_fat|round(1) }} г |
+                            У: {{ dish.total_carb|round(1) }} г
+                        </small>
+                    </p>
+                </div>
+            </div>
+        </div>
+    {% endfor %}
+</div>
+
+<h3 class="mt-4">Продукты</h3>
+<div class="row">
+    {% for prod_id, product in products.items() %}
+        <div class="col-md-4 mb-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <h6 class="card-title">{{ product.name }}</h6>
+                        <a href="/delete_product/{{ product.id }}" class="btn btn-danger btn-sm"
+                           onclick="return confirm('Удалить продукт?')">×</a>
+                    </div>
+                    <small>
+                        {{ product.portion_volume }}<br>
+                        Б: {{ product.protein }} г |
+                        Ж: {{ product.fat }} г |
+                        У: {{ product.carbs }} г |
+                        {{ product.kcal }} ккал
+                    </small>
+                </div>
+            </div>
+        </div>
+    {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-6">
+        <div class="card mb-3">
+            <div class="card-body">
+                <h5 class="card-title">Добавить продукт</h5>
+                <form method="post" action="/add_product">
+                    <div class="mb-3">
+                        <label class="form-label">Название</label>
+                        <input type="text" class="form-control" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Порция</label>
+                        <input type="text" class="form-control" name="portion" value="100 г" required>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Белки (г)</label>
+                            <input type="number" class="form-control" name="prot" step="0.1" value="0">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Жиры (г)</label>
+                            <input type="number" class="form-control" name="fat" step="0.1" value="0">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Углеводы (г)</label>
+                            <input type="number" class="form-control" name="carb" step="0.1" value="0">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label">Ккал</label>
+                            <input type="number" class="form-control" name="kcal" step="0.1" value="0">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-success">Добавить продукт</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Добавить блюдо</h5>
+                <form method="post" action="/add_dish">
+                    <div class="mb-3">
+                        <label class="form-label">Название</label>
+                        <input type="text" class="form-control" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Применение</label>
+                        <select class="form-control" name="application">
+                            {% for app in applications %}
+                                <option>{{ app }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <h6>Состав блюда</h6>
+                    {% for prod_id, product in products.items() %}
+                        <div class="row mb-2 align-items-center">
+                            <div class="col-md-6">
+                                <span>{{ product.name }} ({{ product.kcal }} ккал/{{ product.portion_volume }})</span>
+                            </div>
+                            <div class="col-md-4">
+                                <input type="number" class="form-control" name="qty_{{ prod_id }}" 
+                                       value="0" step="0.1" min="0">
+                            </div>
+                            <div class="col-md-2">
+                                <small>порц.</small>
+                            </div>
+                        </div>
+                    {% endfor %}
+                    <button type="submit" class="btn btn-success mt-3">Добавить блюдо</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

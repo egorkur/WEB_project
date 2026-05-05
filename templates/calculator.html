@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Параметры</h5>
+                <form method="post" action="/calculate">
+                    <div class="mb-3">
+                        <label class="form-label">Возраст (лет)</label>
+                        <input type="number" class="form-control" name="age" value="30" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Вес (кг)</label>
+                        <input type="number" class="form-control" name="weight" value="70" step="0.1" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Рост (см)</label>
+                        <input type="number" class="form-control" name="height" value="175" step="0.1" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Пол</label>
+                        <select class="form-control" name="sex">
+                            <option>Мужской</option>
+                            <option>Женский</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Активность</label>
+                        <select class="form-control" name="activity">
+                            {% for key in activity_factors %}
+                                <option>{{ key }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Цель</label>
+                        <select class="form-control" name="goal">
+                            {% for key in goal_factors %}
+                                <option>{{ key }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Приемов пищи</label>
+                        <select class="form-control" name="meals">
+                            {% for key in meal_schedules %}
+                                <option value="{{ key }}">{{ key }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-success w-100">Рассчитать и подобрать меню</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-8">
+        {% if error %}
+            <div class="alert alert-danger">{{ error }}</div>
+        {% endif %}
+        
+        {% if plan %}
+            <!-- Блок с итоговой калорийностью и стоимостью -->
+            <div class="alert alert-info">
+                <h5>Рекомендуемая суточная калорийность: {{ target_calories|round|int }} ккал</h5>
+                {% if estimated_price %}
+                    <h5 class="mt-2">
+                        Примерная стоимость: {{ estimated_price }} ₽ 
+                        <a href="{{ market_url }}" target="_blank" class="btn btn-sm btn-outline-warning">
+                            Купить все на Яндекс.Маркете
+                        </a>
+                    </h5>
+                {% endif %}
+            </div>
+            
+            {% for meal_type, dishes in plan %}
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <h5 class="card-title">{{ meal_type }}</h5>
+                        {% if dishes %}
+                            {% for dish in dishes %}
+                                <div class="border rounded p-2 mb-2">
+                                    <div class="d-flex justify-content-between align-items-start">
+                                        <div>
+                                            <strong>{{ dish.name }}</strong>
+                                        </div>
+                                        <div class="text-end">
+                                            <span class="badge bg-warning text-dark">≈ {{ (dish.total_kcal * estimated_price / target_calories)|round|int }} ₽</span>
+                                        </div>
+                                    </div>
+                                    <small class="text-muted">
+                                        {{ dish.total_kcal|round|int }} ккал |
+                                        Б: {{ dish.total_prot|round(1) }} г |
+                                        Ж: {{ dish.total_fat|round(1) }} г |
+                                        У: {{ dish.total_carb|round(1) }} г
+                                    </small>
+                                    <div class="mt-1">
+                                        <!-- Состав блюда с кликабельными ссылками на Яндекс.Маркет -->
+                                        <small class="text-muted">
+                                            Состав:
+                                            {% if dish.composition %}
+                                                {% for ing in dish.composition.split(',') %}
+                                                    {% if ':' in ing %}
+                                                        {% set parts = ing.split(':') %}
+                                                        {% set prod_id = parts[0]|int %}
+                                                        {% set qty = parts[1]|float %}
+                                                        {% if prod_id in products %}
+                                                            <a href="https://market.yandex.ru/search?text={{ products[prod_id].name|urlencode }}" 
+                                                               target="_blank" 
+                                                               class="text-decoration-none text-success fw-bold"
+                                                               title="Найти на Яндекс.Маркете">
+                                                                {{ products[prod_id].name }} (x{{ qty }})
+                                                            </a>{% if not loop.last %}, {% endif %}
+                                                        {% endif %}
+                                                    {% endif %}
+                                                {% endfor %}
+                                            {% endif %}
+                                        </small>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                            <!-- Итог по приему пищи -->
+                            {% set meal_kcal = dishes|sum(attribute='total_kcal') %}
+                            <div class="text-end">
+                                <strong>Итого: {{ meal_kcal|round|int }} ккал | 
+                                ≈ {{ (meal_kcal * estimated_price / target_calories)|round|int }} ₽</strong>
+                            </div>
+                        {% else %}
+                            <p class="text-muted">Нет подходящих блюд</p>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endfor %}
+            
+            <!-- Итог за день -->
+            {% set total_kcal = [] %}
+            {% for meal_type, dishes in plan %}
+                {% for dish in dishes %}
+                    {% set _ = total_kcal.append(dish.total_kcal) %}
+                {% endfor %}
+            {% endfor %}
+            <div class="text-center mb-3">
+                <h4>ИТОГО ЗА ДЕНЬ: {{ total_kcal|sum|round|int }} ккал | ≈ {{ estimated_price }} ₽</h4>
+                <div class="mt-2">
+                    <a href="/export_csv?plan={{ plan_json|urlencode }}" class="btn btn-success">
+                        Экспорт в CSV
+                    </a>
+                    <a href="{{ market_url }}" target="_blank" class="btn btn-warning">
+                        Посмотреть на Яндекс.Маркете
+                    </a>
+                </div>
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
