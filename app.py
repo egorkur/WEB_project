@@ -1,5 +1,9 @@
-from flask import Flask, render_template, request, redirect, send_file
-import sqlite3
+from flask import Flask, render_template, request, redirect, send_file, url_for, flash
+from flask_login import LoginManager, login_user, login_required, logout_user, current_user, UserMixin
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+import os
 import csv
 import io
 import json
@@ -7,10 +11,19 @@ from itertools import combinations
 from urllib.parse import quote
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'nutrition_secret_key'
-DB_NAME = 'nutrition.db'
+app.config['SECRET_KEY'] = 'nutrition_secret_key_2024'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///nutrition.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
-# Коэффициенты для расчета калорий
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs('static/images', exist_ok=True)
+
 ACTIVITY_FACTORS = {
     'Минимальная (сидячая работа)': 1.2,
     'Легкая (тренировки 1-3 раза в нед)': 1.375,
@@ -38,92 +51,59 @@ CALORIE_DISTRIBUTION = {
 }
 
 
-def get_db():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
+class User(db.Model, UserMixin):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
 
 
-def load_products():
-    conn = get_db()
-    products = {}
-    cursor = conn.execute('SELECT * FROM Products')
-    for row in cursor:
-        products[row['id']] = dict(row)
-    conn.close()
-    return products
+class Product(db.Model):
+    __tablename__ = 'products'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    portion_volume = db.Column(db.String(50), nullable=False)
+    protein = db.Column(db.Float, nullable=False)
+    fat = db.Column(db.Float, nullable=False)
+    carbs = db.Column(db.Float, nullable=False)
+    kcal = db.Column(db.Float, nullable=False)
 
 
-def load_dishes():
-    conn = get_db()
-    dishes = {}
-    cursor = conn.execute('SELECT * FROM Dishes')
-    for row in cursor:
-        dish = dict(row)
-        total_prot, total_fat, total_carb, total_kcal = 0, 0, 0, 0
-        products = load_products()
-        if dish['composition']:
-            for ingredient in dish['composition'].split(','):
-                if ':' in ingredient:
-                    try:
-                        p_id_str, qty_str = ingredient.split(':')
-                        p_id = int(p_id_str.strip())
-                        qty = float(qty_str.strip())
-                        if p_id in products and qty > 0:
-                            product = products[p_id]
-                            total_prot += product['protein'] * qty
-                            total_fat += product['fat'] * qty
-                            total_carb += product['carbs'] * qty
-                            total_kcal += product['kcal'] * qty
-                    except ValueError:
-                        pass
-        dish['total_prot'] = total_prot
-        dish['total_fat'] = total_fat
-        dish['total_carb'] = total_carb
-        dish['total_kcal'] = total_kcal
-        dishes[dish['id']] = dish
-    conn.close()
-    return dishes
+class Dish(db.Model):
+    __tablename__ = 'dishes'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    composition = db.Column(db.Text, nullable=False)
+    application = db.Column(db.String(50), nullable=False)
+    image_path = db.Column(db.String(500), nullable=False)
 
 
-def calculate_tdee(age, weight, height, sex, activity):
-    # Формула Миффлина-Сан Жеора
-    if sex == 'Мужской':
-        bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
-    else:
-        bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
-    return bmr * ACTIVITY_FACTORS[activity]
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
 
-def find_best_dish_combination(meal_type, target_kcal, dishes):
-    # Подбор оптимальной комбинации блюд для приема пищи
-    candidates = [d for d in dishes.values() if d['application'] == meal_type]
-    if not candidates:
-        return []
-
-    best_combo = []
-    min_diff = float('inf')
-
-    for k in [1, 2, 3]:
-        if len(candidates) < k:
-            continue
-        for combo in combinations(candidates, k):
-            combo_kcal = sum(d['total_kcal'] for d in combo)
-            diff = abs(combo_kcal - target_kcal)
-            if diff < min_diff:
-                min_diff = diff
-                best_combo = list(combo)
-
-    return best_combo
+def get_nutrition(dish):
+    total_kcal = total_prot = total_fat = total_carb = 0
+    if dish.composition:
+        for ing in dish.composition.split(','):
+            if ':' in ing:
+                try:
+                    pid, qty = ing.split(':')
+                    p = Product.query.get(int(pid.strip()))
+                    q = float(qty.strip())
+                    if p and q > 0:
+                        total_kcal += p.kcal * q
+                        total_prot += p.protein * q
+                        total_fat += p.fat * q
+                        total_carb += p.carbs * q
+                except:
+                    pass
+    return total_kcal, total_prot, total_fat, total_carb
 
 
-def get_market_url(product_name):
-    # Генерация ссылки на Яндекс.Маркет для продукта
-    return f"https://market.yandex.ru/search?text={quote(product_name)}"
-
-
-def get_estimated_price(product_name):
-    # Примерные цены на продукты (руб. за порцию 100 г / 1 шт.)
+def get_price(name):
     prices = {
         'Овсянка': 50, 'Молоко': 80, 'Мёд': 300, 'Яйцо': 100,
         'Творог': 120, 'Сыр': 400, 'Хлеб': 45, 'Йогурт': 60,
@@ -132,43 +112,45 @@ def get_estimated_price(product_name):
         'Огурец': 60, 'Томаты': 100, 'Лосось': 800, 'Фисташки': 500,
         'Сметана': 100
     }
-    for key, price in prices.items():
-        if key.lower() in product_name.lower():
-            return price
+    for k, v in prices.items():
+        if k.lower() in name.lower():
+            return v
     return 150
 
 
-def calculate_total_price(plan, products_db):
-    # Расчет примерной стоимости плана питания
-    used_products = {}
+def calc_tdee(age, weight, height, sex, activity):
+    if sex == 'Мужской':
+        bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
+    else:
+        bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+    return bmr * ACTIVITY_FACTORS[activity]
 
-    for meal_type, dishes in plan:
-        for dish in dishes:
-            if dish['composition']:
-                for ingredient in dish['composition'].split(','):
-                    if ':' in ingredient:
-                        try:
-                            p_id_str, qty_str = ingredient.split(':')
-                            p_id = int(p_id_str.strip())
-                            qty = float(qty_str.strip())
-                            if p_id in products_db and qty > 0:
-                                if p_id not in used_products:
-                                    used_products[p_id] = {
-                                        'name': products_db[p_id]['name'],
-                                        'quantity': 0,
-                                        'price_per_portion': get_estimated_price(products_db[p_id]['name'])
-                                    }
-                                used_products[p_id]['quantity'] += qty
-                        except ValueError:
-                            pass
 
-    total_price = sum(data['price_per_portion'] * data['quantity'] for data in used_products.values())
+def find_best(meal_type, target_kcal, dishes):
+    candidates = []
+    for d in dishes:
+        kcal, _, _, _ = get_nutrition(d)
+        d.kcal_value = kcal
+        if d.application == meal_type:
+            candidates.append(d)
 
-    # Ссылка на Яндекс.Маркет со всеми продуктами
-    product_names = [data['name'] for data in used_products.values()]
-    market_url = f"https://market.yandex.ru/search?text={quote('+'.join(product_names))}"
+    if not candidates:
+        return []
 
-    return int(total_price), market_url
+    best = []
+    best_diff = float('inf')
+
+    for k in [1, 2, 3]:
+        if len(candidates) < k:
+            continue
+        for combo in combinations(candidates, k):
+            total = sum(d.kcal_value for d in combo)
+            diff = abs(total - target_kcal)
+            if diff < best_diff:
+                best_diff = diff
+                best = list(combo)
+
+    return best
 
 
 @app.route('/')
@@ -189,168 +171,282 @@ def calculate():
         activity = request.form['activity']
         goal = request.form['goal']
         num_meals = int(request.form['meals'])
-    except (ValueError, KeyError):
+    except:
         return render_template('calculator.html',
                                activity_factors=ACTIVITY_FACTORS,
                                goal_factors=GOAL_FACTORS,
                                meal_schedules=MEAL_SCHEDULES,
-                               error='Ошибка ввода данных')
+                               error='Ошибка ввода')
 
-    tdee = calculate_tdee(age, weight, height, sex, activity)
-    target_calories = tdee * GOAL_FACTORS[goal]
+    tdee = calc_tdee(age, weight, height, sex, activity)
+    target = tdee * GOAL_FACTORS[goal]
 
-    meal_schedule = MEAL_SCHEDULES[num_meals]
-    calorie_distribution = CALORIE_DISTRIBUTION[num_meals]
+    schedule = MEAL_SCHEDULES[num_meals]
+    distribution = CALORIE_DISTRIBUTION[num_meals]
 
-    dishes = load_dishes()
-    products = load_products()
+    dishes = Dish.query.all()
+    products = {p.id: p for p in Product.query.all()}
 
     plan = []
-    for i, meal_type in enumerate(meal_schedule):
-        meal_target_kcal = target_calories * calorie_distribution[i]
-        combo = find_best_dish_combination(meal_type, meal_target_kcal, dishes)
-        plan.append((meal_type, combo))
+    all_kcal = 0
 
-    estimated_price, market_url = calculate_total_price(plan, products)
+    for i, meal_type in enumerate(schedule):
+        meal_kcal = target * distribution[i]
+        combo = find_best(meal_type, meal_kcal, dishes)
 
-    # Сохранение плана для экспорта в CSV
-    plan_json = []
-    for meal_type, dishes_list in plan:
-        meal_data = {
-            'meal_type': meal_type,
-            'dishes': []
-        }
-        for dish in dishes_list:
-            meal_data['dishes'].append({
-                'name': dish['name'],
-                'kcal': round(dish['total_kcal'], 1),
-                'prot': round(dish['total_prot'], 1),
-                'fat': round(dish['total_fat'], 1),
-                'carb': round(dish['total_carb'], 1)
+        meal_dishes = []
+        for d in combo:
+            kcal, prot, fat, carb = get_nutrition(d)
+            meal_dishes.append({
+                'name': d.name,
+                'kcal': round(kcal, 1),
+                'prot': round(prot, 1),
+                'fat': round(fat, 1),
+                'carb': round(carb, 1),
+                'composition': d.composition
             })
-        plan_json.append(meal_data)
+            all_kcal += kcal
+
+        plan.append((meal_type, meal_dishes))
+
+    total_price = int(all_kcal * 2.5)
+    market_url = "https://market.yandex.ru/search?text=продукты+для+правильного+питания"
 
     return render_template('calculator.html',
                            activity_factors=ACTIVITY_FACTORS,
                            goal_factors=GOAL_FACTORS,
                            meal_schedules=MEAL_SCHEDULES,
                            plan=plan,
-                           target_calories=target_calories,
-                           estimated_price=estimated_price,
+                           target_calories=round(target, 1),
+                           estimated_price=total_price,
+                           all_kcal=round(all_kcal, 1),
                            market_url=market_url,
-                           plan_json=json.dumps(plan_json),
                            products=products)
+
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        email = request.form['email']
+        password = request.form['password']
+
+        if User.query.filter_by(username=username).first():
+            flash('Пользователь уже существует', 'danger')
+            return redirect(url_for('register'))
+
+        user = User(username=username, email=email)
+        user.password_hash = generate_password_hash(password)
+        db.session.add(user)
+        db.session.commit()
+
+        flash('Регистрация успешна! Войдите.', 'success')
+        return redirect(url_for('login'))
+
+    return render_template('register.html')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+
+        user = User.query.filter_by(username=username).first()
+
+        if user and check_password_hash(user.password_hash, password):
+            login_user(user)
+            flash('Вы вошли!', 'success')
+            return redirect(url_for('index'))
+
+        flash('Неверный логин или пароль', 'danger')
+
+    return render_template('login.html')
+
+
+@app.route('/logout')
+def logout():
+    logout_user()
+    return redirect(url_for('index'))
 
 
 @app.route('/catalog')
 def catalog():
-    dishes = load_dishes()
-    products = load_products()
+    dishes = Dish.query.all()
+    products = {p.id: p for p in Product.query.all()}
     return render_template('catalog.html', dishes=dishes, products=products)
 
 
 @app.route('/editor')
+@login_required
 def editor():
-    products = load_products()
-    applications = ['Завтрак', 'Обед', 'Ужин', 'Перекус']
-    return render_template('editor.html', products=products, applications=applications)
+    products = Product.query.all()
+    return render_template('editor.html', products=products)
 
 
 @app.route('/add_product', methods=['POST'])
+@login_required
 def add_product():
-    name = request.form['name']
-    portion = request.form['portion']
-    prot = float(request.form['prot'])
-    fat = float(request.form['fat'])
-    carb = float(request.form['carb'])
-    kcal = float(request.form['kcal'])
-
-    conn = get_db()
-    conn.execute(
-        'INSERT INTO Products (name, portion_volume, protein, fat, carbs, kcal) VALUES (?, ?, ?, ?, ?, ?)',
-        (name, portion, prot, fat, carb, kcal)
+    p = Product(
+        name=request.form['name'],
+        portion_volume=request.form['portion'],
+        protein=float(request.form['prot']),
+        fat=float(request.form['fat']),
+        carbs=float(request.form['carb']),
+        kcal=float(request.form['kcal'])
     )
-    conn.commit()
-    conn.close()
+    db.session.add(p)
+    db.session.commit()
+    flash('Продукт добавлен!', 'success')
     return redirect('/editor')
 
 
 @app.route('/add_dish', methods=['POST'])
+@login_required
 def add_dish():
-    name = request.form['name']
-    application = request.form['application']
-    image_path = request.form.get('image_path', 'images/default.jpg')
+    image_path = 'static/images/default.jpg'
+    if 'image' in request.files:
+        file = request.files['image']
+        if file.filename:
+            filename = secure_filename(file.filename)
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+            image_path = f'static/uploads/{filename}'
 
     ingredients = []
     for key, value in request.form.items():
         if key.startswith('qty_') and float(value) > 0:
-            prod_id = key.split('_')[1]
-            ingredients.append(f"{prod_id}:{value}")
+            pid = key.split('_')[1]
+            ingredients.append(f"{pid}:{value}")
 
-    composition = ','.join(ingredients)
-
-    conn = get_db()
-    conn.execute(
-        'INSERT INTO Dishes (name, composition, application, image_path) VALUES (?, ?, ?, ?)',
-        (name, composition, application, image_path)
+    d = Dish(
+        name=request.form['name'],
+        composition=','.join(ingredients),
+        application=request.form['application'],
+        image_path=image_path
     )
-    conn.commit()
-    conn.close()
+    db.session.add(d)
+    db.session.commit()
+    flash('Блюдо добавлено!', 'success')
     return redirect('/catalog')
 
 
 @app.route('/delete_dish/<int:id>')
+@login_required
 def delete_dish(id):
-    conn = get_db()
-    conn.execute('DELETE FROM Dishes WHERE id = ?', (id,))
-    conn.commit()
-    conn.close()
+    Dish.query.filter_by(id=id).delete()
+    db.session.commit()
     return redirect('/catalog')
 
 
 @app.route('/delete_product/<int:id>')
+@login_required
 def delete_product(id):
-    conn = get_db()
-    conn.execute('DELETE FROM Products WHERE id = ?', (id,))
-    conn.commit()
-    conn.close()
+    Product.query.filter_by(id=id).delete()
+    db.session.commit()
     return redirect('/catalog')
 
 
 @app.route('/export_csv')
 def export_csv():
-    plan_json = request.args.get('plan')
-    if not plan_json:
-        return redirect('/')
-
-    plan = json.loads(plan_json)
+    plan = json.loads(request.args.get('plan', '[]'))
 
     si = io.StringIO()
     writer = csv.writer(si, delimiter=';')
-    writer.writerow(['Прием пищи', 'Блюдо', 'Ккал', 'Белки (г)', 'Жиры (г)', 'Углеводы (г)'])
-
-    total_kcal = total_prot = total_fat = total_carb = 0
+    writer.writerow(['Прием пищи', 'Блюдо', 'Ккал', 'Белки', 'Жиры', 'Углеводы'])
 
     for meal in plan:
         for dish in meal['dishes']:
             writer.writerow([meal['meal_type'], dish['name'], dish['kcal'],
                              dish['prot'], dish['fat'], dish['carb']])
-            total_kcal += dish['kcal']
-            total_prot += dish['prot']
-            total_fat += dish['fat']
-            total_carb += dish['carb']
-
-    writer.writerow([])
-    writer.writerow(['ИТОГО ЗА ДЕНЬ', '', round(total_kcal, 1),
-                     round(total_prot, 1), round(total_fat, 1), round(total_carb, 1)])
 
     output = io.BytesIO()
     output.write(si.getvalue().encode('utf-8-sig'))
     output.seek(0)
 
-    return send_file(output, mimetype='text/csv', as_attachment=True,
-                     download_name='план_питания.csv')
+    return send_file(output, mimetype='text/csv', as_attachment=True, download_name='план.csv')
 
+
+if os.path.exists('nutrition.db'):
+    os.remove('nutrition.db')
+
+with app.app_context():
+    db.create_all()
+
+    products_data = [
+        ('Яйцо', '1 шт', 6.0, 5.0, 0.5, 74.0),
+        ('Овсянка (сухая)', '100 г', 11.9, 6.9, 66.2, 389.0),
+        ('Молоко 2.5%', '100 мл', 3.0, 2.5, 4.7, 54.0),
+        ('Куриное филе (вар.)', '100 г', 31.0, 3.6, 0.0, 165.0),
+        ('Рис (вар.)', '100 г', 2.6, 0.3, 28.2, 130.0),
+        ('Огурец свежий', '100 г', 0.7, 0.1, 3.6, 15.0),
+        ('Хлеб пшеничный', '100 г', 7.5, 2.9, 48.8, 265.0),
+        ('Творог 5%', '100 г', 16.0, 5.0, 2.0, 121.0),
+        ('Сыр твердый', '100 г', 25.0, 30.0, 0.0, 370.0),
+        ('Яблоко', '1 шт', 0.4, 0.4, 11.8, 52.0),
+        ('Банан', '1 шт', 1.1, 0.3, 22.8, 89.0),
+        ('Гречка (вар.)', '100 г', 3.4, 1.0, 17.0, 92.0),
+        ('Индейка (вар.)', '100 г', 25.0, 1.0, 0.0, 135.0),
+        ('Макароны (вар.)', '100 г', 5.0, 1.0, 25.0, 150.0),
+        ('Томаты', '100 г', 0.9, 0.2, 3.9, 20.0),
+        ('Лосось (запеч.)', '100 г', 20.0, 12.0, 0.0, 208.0),
+        ('Сметана 15%', '100 г', 2.6, 15.0, 3.0, 175.0),
+        ('Йогурт натуральный', '100 г', 5.0, 3.2, 4.1, 68.0),
+        ('Мёд', '100 г', 0.3, 0.0, 82.4, 329.0),
+        ('Картофель (вар.)', '100 г', 2.0, 0.1, 18.0, 86.0),
+        ('Фисташки', '100 г', 20.0, 45.0, 28.0, 560.0),
+    ]
+
+    for name, portion, prot, fat, carb, kcal in products_data:
+        db.session.add(Product(name=name, portion_volume=portion, protein=prot, fat=fat, carbs=carb, kcal=kcal))
+
+    db.session.commit()
+
+    products = {p.name: p.id for p in Product.query.all()}
+
+    dishes_data = [
+        ('Омлет', f"{products['Яйцо']}:2,{products['Молоко 2.5%']}:0.5", 'Завтрак', 'static/images/omelet.jpg'),
+        ('Овсянка с молоком', f"{products['Овсянка (сухая)']}:0.5,{products['Молоко 2.5%']}:1.5", 'Завтрак',
+         'static/images/oatmeal.jpg'),
+        ('Творог с яблоком', f"{products['Творог 5%']}:1.5,{products['Яблоко']}:1", 'Завтрак', 'static/images'
+                                                                                               '/cottage_cheese.jpg'),
+        ('Тосты с сыром', f"{products['Хлеб пшеничный']}:2,{products['Сыр твердый']}:0.5", 'Завтрак',
+         'static/images/toast_cheese.jpg'),
+        ('Гречка с сыром', f"{products['Гречка (вар.)']}:1.5,{products['Сыр твердый']}:0.3", 'Завтрак',
+         'static/images/buckwheat_cheese.jpg'),
+        ('Йогурт с бананом', f"{products['Йогурт натуральный']}:2,{products['Банан']}:1", 'Завтрак',
+         'static/images/yogurt_banana.jpg'),
+        ('Курица с рисом и огурцом', f"{products['Куриное филе (вар.)']}:2,{products['Рис (вар.)']}:1.5,"
+                                     f"{products['Огурец свежий']}:1", 'Обед', 'static/images/chicken_rice.jpg'),
+        ('Индейка с картофелем',
+         f"{products['Индейка (вар.)']}:1.5,{products['Картофель (вар.)']}:2,{products['Томаты']}:1",
+         'Обед', 'static/images/turkey_potato.jpg'),
+        ('Лосось с гречкой', f"{products['Лосось (запеч.)']}:1.5,{products['Гречка (вар.)']}:1.5", 'Обед',
+         'static/images/salmon_buckwheat.jpg'),
+        ('Паста с курицей', f"{products['Макароны (вар.)']}:2,{products['Куриное филе (вар.)']}:1", 'Обед',
+         'static/images/pasta_chicken.jpg'),
+        ('Картофель с сыром', f"{products['Картофель (вар.)']}:2,{products['Сыр твердый']}:0.5,"
+                              f"{products['Сметана 15%']}:0.5", 'Обед', 'static/images/potato_sourcream.jpg'),
+        ('Творожный обед', f"{products['Творог 5%']}:1,{products['Сметана 15%']}:1,{products['Яблоко']}:1", 'Обед',
+         'static/images/cottage_lunch.jpg'),
+        ('Индейка с огурцами', f"{products['Индейка (вар.)']}:2,{products['Огурец свежий']}:1.5", 'Ужин',
+         'static/images/turkey_salad.jpg'),
+        ('Салат с лососем', f"{products['Лосось (запеч.)']}:1,{products['Томаты']}:1,{products['Огурец свежий']}:1",
+         'Ужин', 'static/images/salmon_salad.jpg'),
+        ('Курица с томатами', f"{products['Куриное филе (вар.)']}:1.5,{products['Томаты']}:1.5", 'Ужин',
+         'static/images/chicken_tomatoes.jpg'),
+        ('Творог с мёдом', f"{products['Творог 5%']}:2,{products['Мёд']}:0.1", 'Ужин',
+         'static/images/cottage_night.jpg'),
+        ('Гречка со сметаной', f"{products['Гречка (вар.)']}:2,{products['Сметана 15%']}:0.5", 'Ужин',
+         'static/images/buckwheat_sourcream.jpg'),
+        ('Банан', f"{products['Банан']}:1", 'Перекус', 'static/images/banana.jpg'),
+        ('Яблоко', f"{products['Яблоко']}:1", 'Перекус', 'static/images/apple.jpg'),
+        ('Фисташки', f"{products['Фисташки']}:0.5", 'Перекус', 'static/images/pistachios.jpg'),
+    ]
+
+    for name, comp, app_type, img in dishes_data:
+        db.session.add(Dish(name=name, composition=comp, application=app_type, image_path=img))
+
+    db.session.commit()
 
 if __name__ == '__main__':
     app.run(debug=True)
